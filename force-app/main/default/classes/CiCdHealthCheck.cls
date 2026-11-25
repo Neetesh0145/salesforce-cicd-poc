@@ -4,6 +4,6 @@
  */
 public with sharing class CiCdHealthCheck {
     public static String ping() {
-        return 'CI/CD pipeline is alive';
+        return 'CI/CD pipeline is alive v3';
     }
 }
