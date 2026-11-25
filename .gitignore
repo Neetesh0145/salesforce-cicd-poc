@@ -1,0 +1,22 @@
+# Salesforce CLI local state (contains org auth info - never commit)
+.sf/
+.sfdx/
+.localdevserver/
+
+# CI working folders
+.delta/
+code-analyzer-results*
+
+# Keys and secrets
+*.key
+*.pem
+*.crt
+authurl*.txt
+
+# Tooling
+node_modules/
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db

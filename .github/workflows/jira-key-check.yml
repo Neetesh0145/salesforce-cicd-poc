@@ -1,0 +1,41 @@
+# Makes sure every feature/bugfix PR references a Jira ticket, so the GitHub for
+# Jira app can link the branch, commits, PR, builds and deployments to it.
+# Passes when the branch name OR the PR title contains a key such as PROJ-123.
+# Optional repo variable JIRA_PROJECT_KEYS (e.g. "PROJ,SFDC") limits allowed projects.
+name: Jira Key Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  jira-key:
+    name: Jira key present
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch name / PR title for a Jira key
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+          KEYS: ${{ vars.JIRA_PROJECT_KEYS }}
+        run: |
+          # Promotion PRs (develop -> uat -> main) and back-merges don't need a key
+          if [[ "$HEAD_REF" =~ ^(develop|uat|main)$ ]]; then
+            echo "Promotion PR from '$HEAD_REF' - no Jira key required."
+            exit 0
+          fi
+
+          if [[ -n "$KEYS" ]]; then
+            PATTERN="($(echo "$KEYS" | tr -d ' ' | tr ',' '|'))-[0-9]+"
+          else
+            PATTERN='[A-Z][A-Z0-9]+-[0-9]+'
+          fi
+
+          if [[ "$HEAD_REF" =~ $PATTERN ]] || [[ "$TITLE" =~ $PATTERN ]]; then
+            echo "Found Jira key: ${BASH_REMATCH[0]}"
+          else
+            echo "::error::No Jira key found. Name the branch like feature/PROJ-123-short-description or put PROJ-123 in the PR title."
+            exit 1
+          fi

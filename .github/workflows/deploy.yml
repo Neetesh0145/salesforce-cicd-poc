@@ -1,0 +1,90 @@
+# Deploys the changed metadata when code lands on a long-lived branch:
+#   push to develop -> SIT   |   push to uat -> UAT   |   push to main -> PROD
+# Each job runs in a GitHub Environment (SIT / UAT / PROD), which gives:
+#   - an approval gate (add required reviewers to the PROD environment)
+#   - deployment history in GitHub, which the GitHub for Jira app shows on tickets
+name: Deploy
+
+on:
+  push:
+    branches: [develop, uat, main]
+  workflow_dispatch:
+    inputs:
+      from_ref:
+        description: Commit/tag to diff from (deploys everything changed since this ref up to the branch tip)
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  SF_AUTOUPDATE_DISABLE: true
+  SF_DISABLE_TELEMETRY: true
+
+jobs:
+  resolve:
+    name: Resolve target org
+    runs-on: ubuntu-latest
+    outputs:
+      org: ${{ steps.map.outputs.org }}
+    steps:
+      - id: map
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$REF_NAME" in
+            develop) ORG=SIT ;;
+            uat)     ORG=UAT ;;
+            main)    ORG=PROD ;;
+            *) echo "::error::No org is mapped to branch '$REF_NAME'"; exit 1 ;;
+          esac
+          echo "org=$ORG" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to ${{ needs.resolve.outputs.org }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: ${{ needs.resolve.outputs.org }}
+    concurrency:
+      group: deploy-${{ needs.resolve.outputs.org }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out code (full history for the delta)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Salesforce CLI and log in
+        uses: ./.github/actions/sf-setup
+        with:
+          org-alias: target
+          auth-url: ${{ secrets[format('SFDX_AUTH_URL_{0}', needs.resolve.outputs.org)] }}
+          jwt-key: ${{ secrets[format('SF_JWT_KEY_{0}', needs.resolve.outputs.org)] }}
+          client-id: ${{ secrets[format('SF_CLIENT_ID_{0}', needs.resolve.outputs.org)] }}
+          username: ${{ vars[format('SF_USERNAME_{0}', needs.resolve.outputs.org)] }}
+          instance-url: ${{ vars[format('SF_INSTANCE_URL_{0}', needs.resolve.outputs.org)] }}
+
+      - name: Work out what changed
+        id: range
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          INPUT_FROM: ${{ inputs.from_ref }}
+        run: |
+          if [[ -n "$INPUT_FROM" ]]; then
+            FROM="$INPUT_FROM"                       # manual run
+          elif [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" =~ ^0+$ ]] \
+               || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            FROM="HEAD~1"                            # first push of the branch / force push
+          else
+            FROM="$BEFORE_SHA"                       # normal merge: previous branch tip
+          fi
+          echo "Diffing from $FROM to $(git rev-parse HEAD)"
+          echo "from=$FROM" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy changed metadata
+        env:
+          FROM_REF: ${{ steps.range.outputs.from }}
+          TEST_LEVEL: ${{ vars[format('TEST_LEVEL_{0}', needs.resolve.outputs.org)] || 'RunLocalTests' }}
+          SPECIFIED_TESTS: ${{ vars[format('SPECIFIED_TESTS_{0}', needs.resolve.outputs.org)] }}
+        run: bash scripts/ci/sf-delta-deploy.sh deploy target "$FROM_REF" HEAD

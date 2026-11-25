@@ -1,0 +1,110 @@
+# Runs on every pull request into develop / uat / main.
+#  1. Validates (dry-run deploy + Apex tests) ONLY the changed metadata against
+#     the org that the target branch deploys to:
+#       develop -> SIT   |   uat -> UAT   |   main -> PROD
+#  2. Runs Salesforce Code Analyzer on the source and attaches the report.
+# Nothing is saved in any org by this workflow.
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [develop, uat, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  SF_AUTOUPDATE_DISABLE: true
+  SF_DISABLE_TELEMETRY: true
+
+jobs:
+  validate:
+    name: Validate against target org
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out code (full history for the delta)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Map target branch to org
+        id: target
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          case "$BASE_REF" in
+            develop) ORG=SIT ;;
+            uat)     ORG=UAT ;;
+            main)    ORG=PROD ;;
+            *) echo "::error::No org is mapped to branch '$BASE_REF'"; exit 1 ;;
+          esac
+          echo "org=$ORG" >> "$GITHUB_OUTPUT"
+          echo "### Validating PR into \`$BASE_REF\` against **$ORG**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Salesforce CLI and log in
+        uses: ./.github/actions/sf-setup
+        with:
+          org-alias: target
+          auth-url: ${{ secrets[format('SFDX_AUTH_URL_{0}', steps.target.outputs.org)] }}
+          jwt-key: ${{ secrets[format('SF_JWT_KEY_{0}', steps.target.outputs.org)] }}
+          client-id: ${{ secrets[format('SF_CLIENT_ID_{0}', steps.target.outputs.org)] }}
+          username: ${{ vars[format('SF_USERNAME_{0}', steps.target.outputs.org)] }}
+          instance-url: ${{ vars[format('SF_INSTANCE_URL_{0}', steps.target.outputs.org)] }}
+
+      - name: Validate changed metadata (dry run)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          TEST_LEVEL: ${{ vars[format('TEST_LEVEL_{0}', steps.target.outputs.org)] || 'RunLocalTests' }}
+          SPECIFIED_TESTS: ${{ vars[format('SPECIFIED_TESTS_{0}', steps.target.outputs.org)] }}
+        run: |
+          # HEAD is GitHub's test merge of the PR into the target branch, so the
+          # delta from the target branch tip is exactly what this PR would change.
+          FROM="$(git merge-base "origin/$BASE_REF" HEAD)"
+          bash scripts/ci/sf-delta-deploy.sh validate target "$FROM" HEAD
+
+  code-analysis:
+    name: Static code analysis
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Salesforce CLI and Code Analyzer
+        run: |
+          npm install --global @salesforce/cli
+          sf plugins install code-analyzer
+
+      # Non-blocking by default. Set repo variable CODE_ANALYZER_BLOCKING=true to
+      # fail the PR when High/Critical (severity 1-2) violations are found.
+      - name: Run Code Analyzer
+        continue-on-error: ${{ vars.CODE_ANALYZER_BLOCKING != 'true' }}
+        run: |
+          sf code-analyzer run \
+            --workspace . \
+            --target force-app \
+            --rule-selector Recommended \
+            --severity-threshold 2 \
+            --output-file code-analyzer-results.html \
+            --output-file code-analyzer-results.json
+
+      - name: Upload Code Analyzer report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-analyzer-report
+          path: code-analyzer-results.*
+          if-no-files-found: ignore

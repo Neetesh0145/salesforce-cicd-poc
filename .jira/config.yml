@@ -1,0 +1,19 @@
+# Read by the "GitHub for Jira" app from the default branch.
+# Maps the GitHub Environment names used in deploy.yml to Jira's environment types,
+# so the Deployments panel on a Jira ticket shows Testing / Staging / Production correctly.
+deployments:
+  environmentMapping:
+    development:
+      - "dev*"
+      - "DEV*"
+    testing:
+      - "sit*"
+      - "SIT*"
+      - "qa*"
+      - "QA*"
+    staging:
+      - "uat*"
+      - "UAT*"
+    production:
+      - "prod*"
+      - "PROD*"

@@ -1,0 +1,82 @@
+name: Salesforce CLI setup
+description: Installs the Salesforce CLI and sfdx-git-delta, then logs in to one org (SFDX auth URL or JWT).
+
+inputs:
+  org-alias:
+    description: Alias to give the authenticated org
+    required: true
+  auth-url:
+    description: SFDX auth URL (simplest option, good for the POC)
+    required: false
+    default: ''
+  jwt-key:
+    description: Private key (PEM text) for JWT bearer flow (recommended for client orgs)
+    required: false
+    default: ''
+  client-id:
+    description: Consumer key of the External Client App / Connected App (JWT only)
+    required: false
+    default: ''
+  username:
+    description: Integration user's username (JWT only)
+    required: false
+    default: ''
+  instance-url:
+    description: Login URL, e.g. https://test.salesforce.com (JWT only)
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+
+    - name: Install Salesforce CLI and sfdx-git-delta
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm install --global @salesforce/cli
+        echo y | sf plugins install sfdx-git-delta
+        sf version
+        sf plugins
+
+    - name: Authenticate org
+      shell: bash
+      env:
+        ALIAS: ${{ inputs.org-alias }}
+        AUTH_URL: ${{ inputs.auth-url }}
+        JWT_KEY: ${{ inputs.jwt-key }}
+        CLIENT_ID: ${{ inputs.client-id }}
+        JWT_USERNAME: ${{ inputs.username }}
+        INSTANCE_URL: ${{ inputs.instance-url }}
+      run: |
+        set -euo pipefail
+        if [[ -n "$JWT_KEY" ]]; then
+          if [[ -z "$CLIENT_ID" || -z "$JWT_USERNAME" ]]; then
+            echo "::error::JWT login needs client-id and username as well as jwt-key"
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/jwt.key"
+          printf '%s\n' "$JWT_KEY" > "$KEY_FILE"
+          sf org login jwt \
+            --client-id "$CLIENT_ID" \
+            --jwt-key-file "$KEY_FILE" \
+            --username "$JWT_USERNAME" \
+            --instance-url "${INSTANCE_URL:-https://test.salesforce.com}" \
+            --alias "$ALIAS"
+          rm -f "$KEY_FILE"
+        elif [[ -n "$AUTH_URL" ]]; then
+          URL_FILE="$RUNNER_TEMP/authurl.txt"
+          printf '%s' "$AUTH_URL" > "$URL_FILE"
+          sf org login sfdx-url --sfdx-url-file "$URL_FILE" --alias "$ALIAS"
+          rm -f "$URL_FILE"
+        else
+          echo "::error::No credentials for this org. Add the SFDX_AUTH_URL_<ORG> secret (run scripts/setup-org-secret.ps1)."
+          exit 1
+        fi
+        # Print only non-sensitive details (plain `sf org display` would print the access token)
+        sf org display --target-org "$ALIAS" --json \
+          | jq -r '.result | "Connected to \(.username) at \(.instanceUrl) (org \(.id))"'
