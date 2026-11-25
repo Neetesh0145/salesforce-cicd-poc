@@ -6,6 +6,6 @@ private class CiCdHealthCheckTest {
         String result = CiCdHealthCheck.ping();
         Test.stopTest();
 
-        Assert.areEqual('CI/CD pipeline is alive', result, 'Health check message changed unexpectedly');
+        Assert.areEqual('CI/CD pipeline is alive v2', result, 'Health check message changed unexpectedly');
     }
 }
